@@ -1,39 +1,30 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, constr, validator
 from supabase import create_client, Client
-from datetime import datetime
 import re
 import os
 
-# ==========================
-# CONFIGURAÇÃO FASTAPI
-# ==========================
 app = FastAPI()
 
-# Habilitar CORS (permite o frontend acessar)
+# ---------------------------
+# CORS
+# ---------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # pode trocar por seu frontend no Render
+    allow_origins=["*"],  # pode restringir para o frontend depois
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==========================
-# CONFIGURAÇÃO SUPABASE
-# ==========================
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://syzkrbqvqiydopixiukk.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "SEU_SUPABASE_KEY_AQUI")  # ⚠️ substitua pela sua
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# ==========================
-# MODELO DE EMPRESA
-# ==========================
+# ---------------------------
+# MODELO
+# ---------------------------
 class Empresa(BaseModel):
-    numero: constr(min_length=5, max_length=5)  # exatamente 5 dígitos
+    numero: constr(min_length=5, max_length=5)
     nome: str
-    documento: constr(min_length=11, max_length=14)  # CPF (11) ou CNPJ (14)
+    documento: constr(min_length=11, max_length=14)
 
     @validator("documento")
     def validar_documento(cls, v):
@@ -41,10 +32,17 @@ class Empresa(BaseModel):
             raise ValueError("Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos numéricos")
         return v
 
-# ==========================
-# ROTAS
-# ==========================
+# ---------------------------
+# SUPABASE
+# ---------------------------
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://syzkrbqvqiydopixiukk.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
 
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ---------------------------
+# ROTAS
+# ---------------------------
 @app.get("/")
 def read_root():
     return {"mensagem": "Olá, Wilton! Seu sistema está rodando 🎉"}
@@ -52,21 +50,19 @@ def read_root():
 @app.post("/empresas")
 def criar_empresa(empresa: Empresa):
     try:
-        data = {
-            "numero": empresa.numero,
-            "nome": empresa.nome,
-            "documento": empresa.documento,
-            "created_at": datetime.utcnow().isoformat()
-        }
-        response = supabase.table("empresas").insert(data).execute()
-        return {"mensagem": "Empresa cadastrada com sucesso!", "empresa": response.data}
+        print("📌 Tentando inserir:", empresa.dict())
+        data, count = supabase.table("empresas").insert(empresa.dict()).execute()
+        print("✅ Inserido no Supabase:", data)
+        return {"mensagem": "Empresa cadastrada com sucesso!", "empresa": data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao cadastrar empresa: {str(e)}")
+        print("❌ ERRO AO INSERIR:", str(e))
+        return {"erro": str(e)}
 
 @app.get("/empresas")
 def listar_empresas():
     try:
-        response = supabase.table("empresas").select("*").execute()
-        return response.data
+        data, count = supabase.table("empresas").select("*").execute()
+        return data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao listar empresas: {str(e)}")
+        print("❌ ERRO AO LISTAR:", str(e))
+        return {"erro": str(e)}
