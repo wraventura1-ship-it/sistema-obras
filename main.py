@@ -126,3 +126,4 @@ def excluir_empresa(id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao excluir empresa: {str(e)}")
+
