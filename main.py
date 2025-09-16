@@ -185,6 +185,103 @@ def excluir_empresa(id: str):
             raise HTTPException(status_code=404, detail="Empresa não encontrada.")
         return {"mensagem": "Empresa excluída com sucesso!"}
     except HTTPException:
+
+
+        # ==========================
+# MODELOS DE OBRA
+# ==========================
+class Obra(BaseModel):
+    numero: constr(min_length=1, max_length=4)
+    nome: str
+    bloco: constr(min_length=1, max_length=3)
+    endereco: str
+
+    @validator("numero")
+    def validar_numero(cls, v):
+        if not re.fullmatch(r"\d{1,4}", v):
+            raise ValueError("Número da obra deve ter até 4 dígitos numéricos.")
+        return v
+
+    @validator("bloco")
+    def validar_bloco(cls, v):
+        if not re.fullmatch(r"[A-Za-z0-9]{1,3}", v):
+            raise ValueError("Bloco deve ter até 3 caracteres (letras ou números).")
+        return v
+
+
+class ObraUpdate(BaseModel):
+    numero: Optional[constr(min_length=1, max_length=4)] = None
+    nome: Optional[str] = None
+    bloco: Optional[constr(min_length=1, max_length=3)] = None
+    endereco: Optional[str] = None
+
+    @validator("numero")
+    def validar_numero(cls, v):
+        if v is not None and not re.fullmatch(r"\d{1,4}", v):
+            raise ValueError("Número da obra deve ter até 4 dígitos numéricos.")
+        return v
+
+    @validator("bloco")
+    def validar_bloco(cls, v):
+        if v is not None and not re.fullmatch(r"[A-Za-z0-9]{1,3}", v):
+            raise ValueError("Bloco deve ter até 3 caracteres (letras ou números).")
+        return v
+
+# ==========================
+# ROTAS DE OBRAS
+# ==========================
+@app.get("/empresas/{empresa_id}/obras")
+def listar_obras(empresa_id: str):
+    try:
+        response = supabase.table("obras").select("*").eq("empresa_id", empresa_id).order("created_at", desc=True).execute()
+        return response.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao listar obras: {str(e)}")
+
+@app.post("/empresas/{empresa_id}/obras")
+def criar_obra(empresa_id: str, obra: Obra):
+    try:
+        data = {
+            "empresa_id": empresa_id,
+            "numero": str(obra.numero).zfill(4),   # padroniza com zeros
+            "nome": obra.nome,
+            "bloco": obra.bloco.upper(),          # bloco sempre maiúsculo
+            "endereco": obra.endereco,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        response = supabase.table("obras").insert(data).execute()
+        return {"mensagem": "Obra cadastrada com sucesso!", "obra": (response.data or [None])[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao cadastrar obra: {str(e)}")
+
+@app.put("/obras/{id}")
+def atualizar_obra(id: str, payload: ObraUpdate):
+    try:
+        update_data = {k: v for k, v in payload.dict().items() if v is not None}
+        if "numero" in update_data:
+            update_data["numero"] = str(update_data["numero"]).zfill(4)
+        if "bloco" in update_data:
+            update_data["bloco"] = update_data["bloco"].upper()
+        if not update_data:
+            raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+        response = supabase.table("obras").update(update_data).eq("id", id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Obra não encontrada.")
+        return {"mensagem": "Obra atualizada com sucesso!", "obra": response.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar obra: {str(e)}")
+
+@app.delete("/obras/{id}")
+def excluir_obra(id: str):
+    try:
+        response = supabase.table("obras").delete().eq("id", id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Obra não encontrada.")
+        return {"mensagem": "Obra excluída com sucesso!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao excluir obra: {str(e)}")
+
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao excluir empresa: {str(e)}")
+
