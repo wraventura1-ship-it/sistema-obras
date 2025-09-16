@@ -27,47 +27,79 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    # Não falha silenciosamente: ajuda a detectar variável faltando
     raise RuntimeError("Variáveis de ambiente SUPABASE_URL e SUPABASE_KEY são obrigatórias.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==========================
+# FUNÇÃO DE VALIDAÇÃO DE CNPJ
+# ==========================
+def is_valid_cnpj(cnpj: str) -> bool:
+    c = re.sub(r"\D", "", cnpj)
+    if len(c) != 14:
+        return False
+    if c == c[0] * 14:  # rejeita sequências repetidas
+        return False
+
+    def _calc(base: str) -> int:
+        total = 0
+        pos = len(base) - 7
+        for ch in base:
+            total += int(ch) * pos
+            pos -= 1
+            if pos < 2:
+                pos = 9
+        r = total % 11
+        return 0 if r < 2 else 11 - r
+
+    base = c[:12]
+    dig1 = _calc(base)
+    dig2 = _calc(base + str(dig1))
+    return c.endswith(f"{dig1}{dig2}")
+
+# ==========================
 # MODELOS
 # ==========================
 class Empresa(BaseModel):
-    numero: constr(min_length=5, max_length=5)   # 5 dígitos
+    numero: constr(min_length=1, max_length=5)   # aceito, normalizo depois
     nome: str
-    documento: constr(min_length=11, max_length=14)  # CPF(11) ou CNPJ(14), só dígitos
+    documento: str  # será validado como CNPJ
 
     @validator("numero")
     def validar_numero(cls, v):
-        if not re.fullmatch(r"\d{5}", v):
-            raise ValueError("Número da empresa deve ter exatamente 5 dígitos.")
+        if not re.fullmatch(r"\d{1,5}", v):
+            raise ValueError("Número da empresa deve ter até 5 dígitos numéricos.")
         return v
 
     @validator("documento")
     def validar_documento(cls, v):
-        if not re.fullmatch(r"\d{11}|\d{14}", v):
-            raise ValueError("Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos numéricos.")
-        return v
+        digits = re.sub(r"\D", "", v)
+        if len(digits) != 14:
+            raise ValueError("Documento deve ter 14 dígitos (CNPJ).")
+        if not is_valid_cnpj(digits):
+            raise ValueError("CNPJ inválido.")
+        return digits
 
 class EmpresaUpdate(BaseModel):
-    # todos opcionais (para PUT parcial)
-    numero: Optional[constr(min_length=5, max_length=5)] = None
+    numero: Optional[constr(min_length=1, max_length=5)] = None
     nome: Optional[str] = None
-    documento: Optional[constr(min_length=11, max_length=14)] = None
+    documento: Optional[str] = None
 
     @validator("numero")
     def validar_numero(cls, v):
-        if v is not None and not re.fullmatch(r"\d{5}", v):
-            raise ValueError("Número da empresa deve ter exatamente 5 dígitos.")
+        if v is not None and not re.fullmatch(r"\d{1,5}", v):
+            raise ValueError("Número da empresa deve ter até 5 dígitos numéricos.")
         return v
 
     @validator("documento")
     def validar_documento(cls, v):
-        if v is not None and not re.fullmatch(r"\d{11}|\d{14}", v):
-            raise ValueError("Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos numéricos.")
+        if v is not None:
+            digits = re.sub(r"\D", "", v)
+            if len(digits) != 14:
+                raise ValueError("Documento deve ter 14 dígitos (CNPJ).")
+            if not is_valid_cnpj(digits):
+                raise ValueError("CNPJ inválido.")
+            return digits
         return v
 
 # ==========================
@@ -88,30 +120,49 @@ def listar_empresas():
 @app.post("/empresas")
 def criar_empresa(empresa: Empresa):
     try:
+        numero_norm = str(empresa.numero).zfill(5)
+        nome_norm = empresa.nome.upper()
+        documento_norm = re.sub(r"\D", "", empresa.documento)
+
+        # checa duplicidade
+        existing = supabase.table("empresas").select("id").eq("documento", documento_norm).execute()
+        if existing.data and len(existing.data) > 0:
+            raise HTTPException(status_code=400, detail="CNPJ já cadastrado.")
+
         data = {
-            "numero": str(empresa.numero).zfill(5),   # garante 5 dígitos
-            "nome": empresa.nome.upper(),             # já deixa maiúsculo
-            "documento": empresa.documento,
+            "numero": numero_norm,
+            "nome": nome_norm,
+            "documento": documento_norm,
             "created_at": datetime.utcnow().isoformat()
         }
         response = supabase.table("empresas").insert(data).execute()
         return {"mensagem": "Empresa cadastrada com sucesso!", "empresa": (response.data or [None])[0]}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao cadastrar empresa: {str(e)}")
 
 @app.put("/empresas/{id}")
 def atualizar_empresa(id: str, payload: EmpresaUpdate):
     try:
-        # monta apenas os campos enviados
         update_data = {k: v for k, v in payload.dict().items() if v is not None}
 
-        # se veio "numero", padroniza com zeros
         if "numero" in update_data:
             update_data["numero"] = str(update_data["numero"]).zfill(5)
 
-        # se veio "nome", deixa maiúsculo
         if "nome" in update_data:
             update_data["nome"] = update_data["nome"].upper()
+
+        if "documento" in update_data:
+            doc_norm = re.sub(r"\D", "", update_data["documento"])
+            if not is_valid_cnpj(doc_norm):
+                raise HTTPException(status_code=400, detail="CNPJ inválido.")
+            existing = supabase.table("empresas").select("id").eq("documento", doc_norm).execute()
+            if existing.data:
+                for row in existing.data:
+                    if str(row.get("id")) != str(id):
+                        raise HTTPException(status_code=400, detail="CNPJ já cadastrado por outra empresa.")
+            update_data["documento"] = doc_norm
 
         if not update_data:
             raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
