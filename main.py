@@ -89,8 +89,8 @@ def listar_empresas():
 def criar_empresa(empresa: Empresa):
     try:
         data = {
-            "numero": empresa.numero,
-            "nome": empresa.nome,
+            "numero": str(empresa.numero).zfill(5),   # garante 5 dígitos
+            "nome": empresa.nome.upper(),             # já deixa maiúsculo
             "documento": empresa.documento,
             "created_at": datetime.utcnow().isoformat()
         }
@@ -104,11 +104,22 @@ def atualizar_empresa(id: str, payload: EmpresaUpdate):
     try:
         # monta apenas os campos enviados
         update_data = {k: v for k, v in payload.dict().items() if v is not None}
+
+        # se veio "numero", padroniza com zeros
+        if "numero" in update_data:
+            update_data["numero"] = str(update_data["numero"]).zfill(5)
+
+        # se veio "nome", deixa maiúsculo
+        if "nome" in update_data:
+            update_data["nome"] = update_data["nome"].upper()
+
         if not update_data:
             raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+
         response = supabase.table("empresas").update(update_data).eq("id", id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+
         return {"mensagem": "Empresa atualizada com sucesso!", "empresa": response.data[0]}
     except HTTPException:
         raise
@@ -126,4 +137,3 @@ def excluir_empresa(id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao excluir empresa: {str(e)}")
-
