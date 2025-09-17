@@ -1,148 +1,139 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import asyncpg
-from asyncpg.exceptions import UniqueViolationError
+from pydantic import BaseModel, constr, validator
+from typing import Optional
+from supabase import create_client, Client
+from datetime import datetime
+import re
+import os
 
+# ==========================
+# FASTAPI + CORS
+# ==========================
 app = FastAPI()
 
-# Configuração do CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # em produção coloque só o domínio do frontend
+    allow_origins=["*"],   # depois podemos restringir só ao seu frontend do Render
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==============================
-# BANCO DE DADOS
-# ==============================
-DATABASE_URL = "postgresql://postgres:postgres@db.xxx.supabase.co:5432/postgres"  
-# 👉 substitua pelo URL da sua instância do Supabase
+# ==========================
+# SUPABASE (env no Render)
+# ==========================
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-async def get_db():
-    conn = await asyncpg.connect(DATABASE_URL)
-    try:
-        yield conn
-    finally:
-        await conn.close()
+if not SUPABASE_URL or not SUPABASE_KEY:
+    # Não falha silenciosamente: ajuda a detectar variável faltando
+    raise RuntimeError("Variáveis de ambiente SUPABASE_URL e SUPABASE_KEY são obrigatórias.")
 
-# ==============================
-# EMPRESAS
-# ==============================
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ==========================
+# MODELOS
+# ==========================
+class Empresa(BaseModel):
+    numero: constr(min_length=5, max_length=5)   # 5 dígitos
+    nome: str
+    documento: constr(min_length=11, max_length=14)  # CPF(11) ou CNPJ(14), só dígitos
+
+    @validator("numero")
+    def validar_numero(cls, v):
+        if not re.fullmatch(r"\d{5}", v):
+            raise ValueError("Número da empresa deve ter exatamente 5 dígitos.")
+        return v
+
+    @validator("documento")
+    def validar_documento(cls, v):
+        if not re.fullmatch(r"\d{11}|\d{14}", v):
+            raise ValueError("Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos numéricos.")
+        return v
+
+class EmpresaUpdate(BaseModel):
+    # todos opcionais (para PUT parcial)
+    numero: Optional[constr(min_length=5, max_length=5)] = None
+    nome: Optional[str] = None
+    documento: Optional[constr(min_length=11, max_length=14)] = None
+
+    @validator("numero")
+    def validar_numero(cls, v):
+        if v is not None and not re.fullmatch(r"\d{5}", v):
+            raise ValueError("Número da empresa deve ter exatamente 5 dígitos.")
+        return v
+
+    @validator("documento")
+    def validar_documento(cls, v):
+        if v is not None and not re.fullmatch(r"\d{11}|\d{14}", v):
+            raise ValueError("Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos numéricos.")
+        return v
+
+# ==========================
+# ROTAS
+# ==========================
+@app.get("/")
+def read_root():
+    return {"mensagem": "Olá, Wilton! Seu sistema está rodando 🎉"}
+
 @app.get("/empresas")
-async def listar_empresas(conn=Depends(get_db)):
-    rows = await conn.fetch("select * from empresas order by numero")
-    return [dict(r) for r in rows]
+def listar_empresas():
+    try:
+        response = supabase.table("empresas").select("*").order("created_at", desc=True).execute()
+        return response.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao listar empresas: {str(e)}")
 
 @app.post("/empresas")
-async def criar_empresa(empresa: dict, conn=Depends(get_db)):
+def criar_empresa(empresa: Empresa):
     try:
-        query = """
-            insert into empresas (numero, nome, documento)
-            values ($1, $2, $3)
-            returning *;
-        """
-        row = await conn.fetchrow(query,
-            empresa["numero"],
-            empresa["nome"],
-            empresa["documento"]
-        )
-        return dict(row)
-    except UniqueViolationError:
-        raise HTTPException(
-            status_code=400,
-            detail="Já existe uma empresa com esse número ou CNPJ."
-        )
+        data = {
+            "numero": str(empresa.numero).zfill(5),   # garante 5 dígitos
+            "nome": empresa.nome.upper(),             # já deixa maiúsculo
+            "documento": empresa.documento,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        response = supabase.table("empresas").insert(data).execute()
+        return {"mensagem": "Empresa cadastrada com sucesso!", "empresa": (response.data or [None])[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao cadastrar empresa: {str(e)}")
 
-@app.put("/empresas/{empresa_id}")
-async def atualizar_empresa(empresa_id: str, empresa: dict, conn=Depends(get_db)):
+@app.put("/empresas/{id}")
+def atualizar_empresa(id: str, payload: EmpresaUpdate):
     try:
-        query = """
-            update empresas
-            set numero=$1, nome=$2, documento=$3
-            where id=$4
-            returning *;
-        """
-        row = await conn.fetchrow(query,
-            empresa["numero"],
-            empresa["nome"],
-            empresa["documento"],
-            empresa_id
-        )
-        if not row:
+        # monta apenas os campos enviados
+        update_data = {k: v for k, v in payload.dict().items() if v is not None}
+
+        # se veio "numero", padroniza com zeros
+        if "numero" in update_data:
+            update_data["numero"] = str(update_data["numero"]).zfill(5)
+
+        # se veio "nome", deixa maiúsculo
+        if "nome" in update_data:
+            update_data["nome"] = update_data["nome"].upper()
+
+        if not update_data:
+            raise HTTPException(status_code=400, detail="Nenhum campo para atualizar.")
+
+        response = supabase.table("empresas").update(update_data).eq("id", id).execute()
+        if not response.data:
             raise HTTPException(status_code=404, detail="Empresa não encontrada.")
-        return dict(row)
-    except UniqueViolationError:
-        raise HTTPException(
-            status_code=400,
-            detail="Já existe uma empresa com esse número ou CNPJ."
-        )
 
-@app.delete("/empresas/{empresa_id}")
-async def excluir_empresa(empresa_id: str, conn=Depends(get_db)):
-    await conn.execute("delete from empresas where id=$1", empresa_id)
-    return {"message": "Empresa excluída com sucesso"}
+        return {"mensagem": "Empresa atualizada com sucesso!", "empresa": response.data[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar empresa: {str(e)}")
 
-# ==============================
-# OBRAS
-# ==============================
-@app.get("/empresas/{empresa_id}/obras")
-async def listar_obras(empresa_id: str, conn=Depends(get_db)):
-    rows = await conn.fetch(
-        "select * from obras where empresa_id=$1 order by numero",
-        empresa_id
-    )
-    return [dict(r) for r in rows]
-
-@app.post("/empresas/{empresa_id}/obras")
-async def criar_obra(empresa_id: str, obra: dict, conn=Depends(get_db)):
+@app.delete("/empresas/{id}")
+def excluir_empresa(id: str):
     try:
-        query = """
-            insert into obras (empresa_id, numero, nome, bloco, endereco)
-            values ($1, $2, $3, $4, $5)
-            returning *;
-        """
-        row = await conn.fetchrow(query,
-            empresa_id,
-            obra["numero"],
-            obra["nome"],
-            obra["bloco"],
-            obra["endereco"]
-        )
-        return dict(row)
-    except UniqueViolationError:
-        raise HTTPException(
-            status_code=400,
-            detail="Já existe uma obra com esse número nesta empresa."
-        )
-
-@app.put("/obras/{obra_id}")
-async def atualizar_obra(obra_id: str, obra: dict, conn=Depends(get_db)):
-    try:
-        query = """
-            update obras
-            set numero=$1, nome=$2, bloco=$3, endereco=$4
-            where id=$5
-            returning *;
-        """
-        row = await conn.fetchrow(query,
-            obra["numero"],
-            obra["nome"],
-            obra["bloco"],
-            obra["endereco"],
-            obra_id
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="Obra não encontrada.")
-        return dict(row)
-    except UniqueViolationError:
-        raise HTTPException(
-            status_code=400,
-            detail="Já existe uma obra com esse número nesta empresa."
-        )
-
-@app.delete("/obras/{obra_id}")
-async def excluir_obra(obra_id: str, conn=Depends(get_db)):
-    await conn.execute("delete from obras where id=$1", obra_id)
-    return {"message": "Obra excluída com sucesso"}
+        response = supabase.table("empresas").delete().eq("id", id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+        return {"mensagem": "Empresa excluída com sucesso!"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao excluir empresa: {str(e)}")
