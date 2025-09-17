@@ -243,16 +243,23 @@ def criar_obra(empresa_id: str, obra: Obra):
     try:
         data = {
             "empresa_id": empresa_id,
-            "numero": str(obra.numero).zfill(4),   # padroniza com zeros
+            "numero": str(obra.numero).zfill(4),   # sempre 4 dígitos
             "nome": obra.nome,
-            "bloco": obra.bloco.upper(),          # bloco sempre maiúsculo
+            "bloco": obra.bloco.upper(),
             "endereco": obra.endereco,
             "created_at": datetime.utcnow().isoformat()
         }
         response = supabase.table("obras").insert(data).execute()
         return {"mensagem": "Obra cadastrada com sucesso!", "obra": (response.data or [None])[0]}
     except Exception as e:
+        erro_str = str(e).lower()
+        if "duplicate key" in erro_str or "unique constraint" in erro_str:
+            raise HTTPException(
+                status_code=400,
+                detail="Já existe uma obra com esse número nesta empresa."
+            )
         raise HTTPException(status_code=500, detail=f"Erro ao cadastrar obra: {str(e)}")
+
 
 @app.put("/obras/{id}")
 def atualizar_obra(id: str, payload: ObraUpdate):
@@ -269,7 +276,14 @@ def atualizar_obra(id: str, payload: ObraUpdate):
             raise HTTPException(status_code=404, detail="Obra não encontrada.")
         return {"mensagem": "Obra atualizada com sucesso!", "obra": response.data[0]}
     except Exception as e:
+        erro_str = str(e).lower()
+        if "duplicate key" in erro_str or "unique constraint" in erro_str:
+            raise HTTPException(
+                status_code=400,
+                detail="Já existe uma obra com esse número nesta empresa."
+            )
         raise HTTPException(status_code=500, detail=f"Erro ao atualizar obra: {str(e)}")
+
 
 @app.delete("/obras/{id}")
 def excluir_obra(id: str):
@@ -284,4 +298,5 @@ def excluir_obra(id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao excluir empresa: {str(e)}")
+
 
